@@ -22,6 +22,7 @@ typedef struct _lightbulb_fx_data_t {
     
     uint32_t counter_mode_step;
     uint32_t counter_mode_call;
+    uint32_t counter_mode_call_pause;
     
     uint32_t next_time;
     
@@ -39,3 +40,4 @@ uint32_t get_lightbulb_fx_effect_now_ms();
 void set_fx_speed(lightbulb_fx_data_t* lightbulb_fx_data, const uint8_t new_speed);
 void set_fx_reverse(lightbulb_fx_data_t* lightbulb_fx_data, const bool is_reverse);
 void set_fx_size(lightbulb_fx_data_t* lightbulb_fx_data, const uint8_t new_size);
+void set_fx_counter_mode_call_pause(lightbulb_fx_data_t* lightbulb_fx_data, const uint32_t new_counter_mode_call_pause);

@@ -26,5 +26,6 @@ idf_component_register(
         new_dht
         new_ds18b20
         cJSON-rsf
+        wolfssl
         homekit-rsf
 )

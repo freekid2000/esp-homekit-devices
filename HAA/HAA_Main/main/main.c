@@ -29,6 +29,13 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_attr.h"
 
+#include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/types.h>
+#include <wolfssl/wolfcrypt/logging.h>
+#include <wolfssl/wolfcrypt/sha512.h>
+#include <wolfssl/wolfcrypt/ecc.h>
+#include <wolfssl/wolfcrypt/asn_public.h>
+
 #define sdk_system_get_time_raw()           ((uint32_t) esp_timer_get_time())
 
 #define HAA_ENTER_CRITICAL_TASK()           portMUX_TYPE *my_spinlock = malloc(sizeof(portMUX_TYPE)); portMUX_INITIALIZE(my_spinlock); taskENTER_CRITICAL(my_spinlock)
@@ -109,6 +116,7 @@ main_config_t main_config = {
 #ifdef ESP_PLATFORM
     .adc_dac_data = NULL,
     .pwmh_channels = NULL,
+    .ssl_ctx = NULL,
 #endif
     
 #ifdef ESP_HAS_INTERNAL_TEMP_SENSOR
@@ -523,7 +531,11 @@ const char http_header1[] = " HTTP/1.1\r\nHost: ";  // 17
 const char http_header2[] = "\r\nUser-Agent: HAA/"HAA_FIRMWARE_VERSION"\r\nConnection: close\r\n";  // 18 + strlen(HAA_FIRMWARE_VERSION + 21
 const char http_header_len[] = "Content-length: ";
 
+#ifdef ESP_PLATFORM
+int new_net_con(char* host, uint16_t port_n, bool is_udp, uint8_t* payload, unsigned int payload_len, int* s, uint8_t rcvtimeout_s, int rcvtimeout_us, unsigned int is_ssl, WOLFSSL** ssl_context) {
+#else
 int new_net_con(char* host, uint16_t port_n, bool is_udp, uint8_t* payload, unsigned int payload_len, int* s, uint8_t rcvtimeout_s, int rcvtimeout_us) {
+#endif
     struct addrinfo* res = NULL;
     struct addrinfo hints;
     int result;
@@ -541,14 +553,14 @@ int new_net_con(char* host, uint16_t port_n, bool is_udp, uint8_t* payload, unsi
     
     if (getaddrinfo(host, port, &hints, &res) != 0) {
         if (res) {
-            free(res);
+            freeaddrinfo(res);
         }
         return -3;
     }
     
     *s = socket(res->ai_family, res->ai_socktype, 0);
     if (*s < 0) {
-        free(res);
+        freeaddrinfo(res);
         return -2;
     }
     
@@ -560,17 +572,63 @@ int new_net_con(char* host, uint16_t port_n, bool is_udp, uint8_t* payload, unsi
         setsockopt(*s, SOL_SOCKET, SO_RCVTIMEO, &rcvtimeout, sizeof(rcvtimeout));
         
         if (connect(*s, res->ai_addr, res->ai_addrlen) != 0) {
-            free(res);
+            freeaddrinfo(res);
             return -1;
         }
         
+#ifdef ESP_PLATFORM
+        if (is_ssl) {
+            if (!main_config.ssl_ctx) {
+                wolfSSL_Init();
+                
+                main_config.ssl_ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
+                //main_config.ssl_ctx = wolfSSL_CTX_new(wolfSSLv23_client_method());
+                
+                //wolfSSL_CTX_SetMinVersion(main_config.ssl_ctx, WOLFSSL_TLSV1_2);
+                
+                wolfSSL_CTX_set_verify(main_config.ssl_ctx, SSL_VERIFY_NONE, NULL);
+            }
+            
+            int ret;
+            
+            *ssl_context = wolfSSL_new(main_config.ssl_ctx);
+            if (!*ssl_context) {
+                result = -12;
+                
+            } else {
+                ret = wolfSSL_set_fd(*ssl_context, *s);
+                if (ret != SSL_SUCCESS) {
+                    result = -11;
+                    
+                } else {
+                    ret = wolfSSL_UseSNI(*ssl_context, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+                    if (ret != SSL_SUCCESS) {
+                        result = -11;
+                        
+                    } else {
+                        ret = wolfSSL_connect(*ssl_context);
+                        if (ret != SSL_SUCCESS) {
+                            result = -11;
+                            
+                        } else {
+                            result = wolfSSL_write(*ssl_context, payload, payload_len);
+                        }
+                    }
+                }
+            }
+            
+        } else {
+            result = write(*s, payload, payload_len);
+        }
+#else
         result = write(*s, payload, payload_len);
+#endif
         
     } else {
         result = sendto(*s, payload, payload_len, 0, res->ai_addr, res->ai_addrlen);
     }
     
-    free(res);
+    freeaddrinfo(res);
     return result;
 }
 
@@ -3521,10 +3579,10 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
     
     // Get the xy coordinates using sRGB Primaries. This appears to be the space that HomeKit gives HSV commands in, however, we need to do some gamut streching.
     // This matrix should later be computed fromms scratch using the functions above
-    const float denom = gc[2] * (1.0849816845413038 - 1.013932032965188 * WP[0] - 1.1309562993446372 * WP[1]) + gc[0] * (-0.07763613020327381 + 0.6290345979071447 * WP[0] + 0.28254416233165086 * WP[1]) + gc[1] * (-0.007345554338030566 + 0.38489743505804436 * WP[0] + 0.8484121370129867 * WP[1]);
+    const float denom = gc[2] * (1.0849816845413038 - 1.013932032965188 * lightbulb_group->wp[0] - 1.1309562993446372 * lightbulb_group->wp[1]) + gc[0] * (-0.07763613020327381 + 0.6290345979071447 * lightbulb_group->wp[0] + 0.28254416233165086 * lightbulb_group->wp[1]) + gc[1] * (-0.007345554338030566 + 0.38489743505804436 * lightbulb_group->wp[0] + 0.8484121370129867 * lightbulb_group->wp[1]);
     float p[2] = {
-        (gc[2] * (0.14346747729293707 - 0.10973602163740542 * WP[0] - 0.15130242398432014 * WP[1]) + gc[1] * (-0.07488078606033685 + 0.6384263445494799 * WP[0] - 0.021643836986853505 * WP[1]) + gc[0] * (-0.06858669123260035 + 0.47130967708792587 * WP[0] + 0.17294626097117374 * WP[1])) / denom,
-        (gc[2] * (0.044068179152577595 - 0.039763003918887874 * WP[0] - 0.023967881257084177 * WP[1]) + gc[0] * (-0.029315872239491187 + 0.18228806745026777 * WP[0] + 0.12851324243365222 * WP[1]) + gc[1] * (-0.014752306913086446 - 0.14252506353137964 * WP[0] + 0.8954546388234319 * WP[1])) / denom
+        (gc[2] * (0.14346747729293707 - 0.10973602163740542 * lightbulb_group->wp[0] - 0.15130242398432014 * lightbulb_group->wp[1]) + gc[1] * (-0.07488078606033685 + 0.6384263445494799 * lightbulb_group->wp[0] - 0.021643836986853505 * lightbulb_group->wp[1]) + gc[0] * (-0.06858669123260035 + 0.47130967708792587 * lightbulb_group->wp[0] + 0.17294626097117374 * lightbulb_group->wp[1])) / denom,
+        (gc[2] * (0.044068179152577595 - 0.039763003918887874 * lightbulb_group->wp[0] - 0.023967881257084177 * lightbulb_group->wp[1]) + gc[0] * (-0.029315872239491187 + 0.18228806745026777 * lightbulb_group->wp[0] + 0.12851324243365222 * lightbulb_group->wp[1]) + gc[1] * (-0.014752306913086446 - 0.14252506353137964 * lightbulb_group->wp[0] + 0.8954546388234319 * lightbulb_group->wp[1])) / denom
     };
     L_DEBUG("Chromaticity: [%g, %g]", p[0], p[1]);
     
@@ -3551,14 +3609,14 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
         float CMY[3][2] = { { 0.249488, 0.367277 }, { 0.364161, 0.178021 }, { 0.438746, 0.501925 } };     // actual sCMY
         float RGB[3][2] = { { 0.648428, 0.330855 }, { 0.321142, 0.597873 }, { 0.155883, 0.0660408 } };    // actual sRGB
         float LED_CMY[3][2];
-        float* LED_RGB[3] = { R, G, B };
+        float* LED_RGB[3] = { lightbulb_group->r, lightbulb_group->g, lightbulb_group->b };
         L_DEBUG("LED RGB: { {%g, %g}, {%g, %g}, {%g, %g} }", LED_RGB[0][0], LED_RGB[0][1], LED_RGB[1][0], LED_RGB[1][1], LED_RGB[2][0], LED_RGB[2][1]);
 
         for (unsigned int i = 0; i < 3; i++) {
             int j = ((i + 1) % 3);
             int k = ((i + 2) % 3); //had to adapt a bit for 0-based indexing
             float pp[2];
-            intersect(pp, WP, *(myCMY + i), *(LED_RGB + j), *(LED_RGB + k)); // compute point long the line from white-C(MY) to RG(B) line.
+            intersect(pp, lightbulb_group->wp, *(myCMY + i), *(LED_RGB + j), *(LED_RGB + k)); // compute point long the line from white-C(MY) to RG(B) line.
             LED_CMY[i][0] = pp[0];
             LED_CMY[i][1] = pp[1]; // assign coordinates to the LED_CMY array
         }
@@ -3570,12 +3628,12 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
         float mat1[2][2];
         bary(L, p, *(CMY + 0), *(CMY + 1), *(CMY + 2)); // Reduce to inner CMY or outer RGB trinagle set
         if ((L[0] >= 0) && (L[1] >= 0) && (L[2] >= 0)) {
-            bary(L, p, WP, *(CMY + 1), *(CMY + 2)); // Test magenta triangle
+            bary(L, p, lightbulb_group->wp, *(CMY + 1), *(CMY + 2)); // Test magenta triangle
             if ((L[0] >= 0) && (L[1] >= 0) && (L[2] >= 0)) {
                 i = 1;
                 j = 2;
             } else {
-                bary(L, p, WP, *(CMY + 0), *(CMY + 2)); // Test yellow triangle
+                bary(L, p, lightbulb_group->wp, *(CMY + 0), *(CMY + 2)); // Test yellow triangle
                 if ((L[0] >= 0) && (L[1] >= 0) && (L[2] >= 0)) {
                     i = 0;
                     j = 2;
@@ -3586,12 +3644,12 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
             }
             // i and j correspond to which CMY primaries govern the transformation
             float p1[2], p2[2], p3[2], p4[2];
-            array_subtract(p1, *(LED_CMY + i), WP); // must shift so that the white point is at the origin
-            array_subtract(p2, *(CMY + i),     WP);
-            array_subtract(p3, *(LED_CMY + j), WP);
-            array_subtract(p4, *(CMY + j),     WP);
+            array_subtract(p1, *(LED_CMY + i), lightbulb_group->wp); // must shift so that the white point is at the origin
+            array_subtract(p2, *(CMY + i),     lightbulb_group->wp);
+            array_subtract(p3, *(LED_CMY + j), lightbulb_group->wp);
+            array_subtract(p4, *(CMY + j),     lightbulb_group->wp);
             pair_transform(mat1, p1, p2, p3, p4);
-            gamut_transform(p,mat1,WP); // Still want to perfom inner transform on p
+            gamut_transform(p, mat1, lightbulb_group->wp); // Still want to perfom inner transform on p
             
         } else { // must be in outer RGB triangles
             bary(L, p, *(CMY + 1), *(CMY + 2), *(RGB + 0)); //Test red triangle (magenta-yellow-red)
@@ -3622,19 +3680,19 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
                     
             // Need to put this into function to avoid repeating code, or use a test with k to apply second transform if necessary
             float p1[2], p2[2], p3[2], p4[2];
-            array_subtract(p1, *(LED_CMY + i), WP); // must shift so that the white point is at the origin
-            array_subtract(p2, *(CMY + i),     WP);
-            array_subtract(p3, *(LED_CMY + j), WP);
-            array_subtract(p4, *(CMY + j),     WP);
+            array_subtract(p1, *(LED_CMY + i), lightbulb_group->wp); // must shift so that the white point is at the origin
+            array_subtract(p2, *(CMY + i),     lightbulb_group->wp);
+            array_subtract(p3, *(LED_CMY + j), lightbulb_group->wp);
+            array_subtract(p4, *(CMY + j),     lightbulb_group->wp);
             pair_transform(mat1, p1, p2, p3, p4);
-            gamut_transform(p, mat1, WP); // Still want to perfom inner transform on p
+            gamut_transform(p, mat1, lightbulb_group->wp); // Still want to perfom inner transform on p
             L_DEBUG("p1 = [%g, %g], p2 = [%g, %g], p3 = [%g, %g], p4 = [%g, %g]", p1[0], p1[1], p2[0], p2[1], p3[0], p3[1], p4[0], p4[1]);
             L_DEBUG("After gamut transform p = [%g, %g]", p[0], p[1]);
             L_DEBUG("mat1 = { {%g, %g}, {%g, %g} }", mat1[0][0], mat1[0][1], mat1[1][0], mat1[1][1]);
             
             float vertex[2] = { RGB[k][0], RGB[k][1] }; // need to check that this properly copying
             L_DEBUG("vertex(sRGB): [%g, %g]", vertex[0], vertex[1]);
-            gamut_transform(vertex, mat1, WP); // in particular want to track where the desired vertex went
+            gamut_transform(vertex, mat1, lightbulb_group->wp); // in particular want to track where the desired vertex went
             L_DEBUG("vertex(sRGB) after transform: [%g, %g]", vertex[0], vertex[1]);
             
             // Now apply additional trnasformation to map RGB vertexes
@@ -3662,7 +3720,7 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
     }
   
     float targetRGB[3];
-    bary(targetRGB, p, R, G, B);
+    bary(targetRGB, p, lightbulb_group->r, lightbulb_group->g, lightbulb_group->b);
     
     array_multiply(targetRGB, 1 / array_max(targetRGB, 3), 3); // Never can be all zeros, ok to divide; just to max out to do extraRGB
     
@@ -3672,14 +3730,14 @@ void hsi2rgbw(uint16_t h, float s, uint8_t v, ch_group_t* ch_group) {
         
         // RGBW assumes W is in CW position
         float coeffs1[4];
-        getWeights(coeffs1, p, R, G, B, CW);
+        getWeights(coeffs1, p, lightbulb_group->r, lightbulb_group->g, lightbulb_group->b, lightbulb_group->cw);
         for (unsigned int i = 0; i < 4; i++) {
             coeffs[i] += coeffs1[i];
         }
         // If WW, then compute RGBW again with WW, add to the main coeff list. Can easlily add support for any LEDs inside the gamut. The only thing I am worried about is that the RGB is always pulling float-duty with two vertexes instead of so
         if (LIGHTBULB_CHANNELS == 5) {
             float coeffs2[4];
-            getWeights(coeffs2, p, R, G, B, WW);
+            getWeights(coeffs2, p, lightbulb_group->r, lightbulb_group->g, lightbulb_group->b, lightbulb_group->ww);
             for (unsigned int i = 0; i < 3; i++) {
                 coeffs[i] += coeffs2[i];
             }
@@ -5862,6 +5920,10 @@ void free_monitor_task(void* args) {
                                         rcvtimeout_us = (action_network->wait_response % 10) * 100000;
                                     }
                                     
+#ifdef ESP_PLATFORM
+                                    WOLFSSL* ssl_context = NULL;
+#endif
+                                    
                                     if (action_network->method_n < 10) {
                                         char* req = NULL;
                                         
@@ -5943,7 +6005,11 @@ void free_monitor_task(void* args) {
                                                              action_network->method_n == 4 ? action_network->raw : (uint8_t*) req,
                                                              action_network->len,
                                                              &socket,
-                                                             rcvtimeout_s, rcvtimeout_us);
+                                                             rcvtimeout_s, rcvtimeout_us
+#ifdef ESP_PLATFORM
+                                                             , action_network->ssl, &ssl_context
+#endif
+                                                             );
                                         
                                         if (result >= 0) {
                                             if (action_network->method_n == 3 || action_network->method_n == 4) {
@@ -5966,7 +6032,11 @@ void free_monitor_task(void* args) {
                                                              action_network->method_n == 13 ? (uint8_t*) action_network->content : action_network->raw,
                                                              action_network->len,
                                                              &socket,
-                                                             rcvtimeout_s, rcvtimeout_us);
+                                                             rcvtimeout_s, rcvtimeout_us
+#ifdef ESP_PLATFORM
+                                                             , action_network->ssl, &ssl_context
+#endif
+                                                             );
                                         
                                         if (result > 0) {
                                             if (action_network->method_n == 13) {
@@ -5988,7 +6058,17 @@ void free_monitor_task(void* args) {
                                         uint8_t* recv_buffer = malloc(65);
                                         do {
                                             memset(recv_buffer, 0, 65);
+                                            
+#ifdef ESP_PLATFORM
+                                            if (action_network->ssl) {
+                                                read_byte = wolfSSL_read(ssl_context, recv_buffer, 64);
+                                            } else {
+                                                read_byte = read(socket, recv_buffer, 64);
+                                            }
+#else
                                             read_byte = read(socket, recv_buffer, 64);
+#endif
+                                            
                                             if (read_byte > 0) {
                                                 uint8_t* new_str = realloc(str, total_recv + read_byte + 1);
                                                 if (!new_str) {
@@ -5996,15 +6076,24 @@ void free_monitor_task(void* args) {
                                                 }
                                                 str = new_str;
                                                 memcpy(str + total_recv, recv_buffer, read_byte);
+                                                
+                                                INFO_NNL("%s", recv_buffer);
                                                 total_recv += read_byte;
                                             }
-                                        } while (read_byte > 0 && total_recv < 2048);
+                                        } while (read_byte > 0 && total_recv < NETWORK_REPLY_LEN_MAX);
                                         
                                         free(recv_buffer);
+                                        INFO("-> %i", total_recv);
+                                        vTaskDelay(20 / portTICK_PERIOD_MS);
                                     }
                                     
                                     if (socket >= 0) {
                                         close(socket);
+#ifdef ESP_PLATFORM
+                                        if (ssl_context) {
+                                            wolfSSL_free(ssl_context);
+                                        }
+#endif
                                     }
                                     
                                     xSemaphoreGive(main_config.network_busy_mutex);
@@ -6012,9 +6101,11 @@ void free_monitor_task(void* args) {
                                     if (total_recv > 0) {
                                         str[total_recv] = 0;
                                         
+                                        /*
                                         if (fm_sensor_type == FM_SENSOR_TYPE_NETWORK || fm_sensor_type == FM_SENSOR_TYPE_NETWORK_PATTERN_TEXT) {
                                             INFO("%s", str);
                                         }
+                                        */
                                         
                                         uint8_t* found = str;
                                         if (action_network->method_n < 3 &&
@@ -6056,7 +6147,7 @@ void free_monitor_task(void* args) {
                                         
                                         free(str);
                                         
-                                        INFO("<%i> %i", ch_group->serv_index, total_recv);
+                                        //INFO("<%i> %i", ch_group->serv_index, total_recv);
                                     }
                                 }
                                 
@@ -6665,6 +6756,10 @@ void net_action_task(void* pvParameters) {
                 
                 str_ch_value_t* str_ch_value_first = NULL;
                 
+#ifdef ESP_PLATFORM
+                WOLFSSL* ssl_context = NULL;
+#endif
+                
                 if (action_network->method_n < 10) {
                     unsigned int content_len_n = 0;
                     
@@ -6766,7 +6861,11 @@ void net_action_task(void* pvParameters) {
                                              action_network->method_n == 4 ? action_network->raw : (uint8_t*) req,
                                              action_network->len,
                                              &socket,
-                                             rcvtimeout_s, rcvtimeout_us);
+                                             rcvtimeout_s, rcvtimeout_us
+#ifdef ESP_PLATFORM
+                                             , action_network->ssl, &ssl_context
+#endif
+                                             );
                     
                     if (result >= 0) {
                         if (action_network->method_n == 4) {
@@ -6782,13 +6881,24 @@ void net_action_task(void* pvParameters) {
                             uint8_t* recv_buffer = malloc(65);
                             do {
                                 memset(recv_buffer, 0, 65);
+                                
+#ifdef ESP_PLATFORM
+                                if (action_network->ssl) {
+                                    read_byte = wolfSSL_read(ssl_context, recv_buffer, 64);
+                                } else {
+                                    read_byte = read(socket, recv_buffer, 64);
+                                }
+#else
                                 read_byte = read(socket, recv_buffer, 64);
+#endif
+                                
                                 INFO_NNL("%s", recv_buffer);
                                 total_recv += read_byte;
-                            } while (read_byte > 0 && total_recv < 2048);
+                            } while (read_byte > 0 && total_recv < NETWORK_REPLY_LEN_MAX);
                             
                             free(recv_buffer);
                             INFO("-> %i", total_recv);
+                            vTaskDelay(20 / portTICK_PERIOD_MS);
                         }
                         
                     } else {
@@ -6797,6 +6907,11 @@ void net_action_task(void* pvParameters) {
                     
                     if (socket >= 0) {
                         close(socket);
+#ifdef ESP_PLATFORM
+                        if (ssl_context) {
+                            wolfSSL_free(ssl_context);
+                        }
+#endif
                     }
                     
                     if (req) {
@@ -6840,11 +6955,19 @@ void net_action_task(void* pvParameters) {
                                              (uint8_t*) req,
                                              content_len_n,
                                              &socket,
-                                             1, 0);
+                                             1, 0
+#ifdef ESP_PLATFORM
+                                             , action_network->ssl, &ssl_context
+#endif
+                                             );
                         
                         if (socket >= 0) {
                             close(socket);
-                            
+#ifdef ESP_PLATFORM
+                            if (ssl_context) {
+                                wolfSSL_free(ssl_context);
+                            }
+#endif
                             if (result > 0) {
                                 INFO("<%i> Payload\n%s", action_task->ch_group->serv_index, req);
                             }
@@ -6865,10 +6988,19 @@ void net_action_task(void* pvParameters) {
                                                  wol ? wol : action_network->raw,
                                                  wol ? WOL_PACKET_LEN : action_network->len,
                                                  &socket,
-                                                 1, 0);
+                                                 1, 0
+#ifdef ESP_PLATFORM
+                                                 , action_network->ssl, &ssl_context
+#endif
+                                                 );
                             
                             if (socket >= 0) {
                                 close(socket);
+#ifdef ESP_PLATFORM
+                                if (ssl_context) {
+                                    wolfSSL_free(ssl_context);
+                                }
+#endif
                             }
                             
                             if (attemp < (max_attemps - 1)) {
@@ -7555,6 +7687,10 @@ void do_actions(ch_group_t* ch_group, uint8_t action) {
                             if (value_int > 1) {
                                 if (value_int < 103) {                  // BRI
                                     hkc_rgbw_setter(ch_group->ch[1], HOMEKIT_INT(value_int - 2));
+                                    
+                                } else if (value_int >= 500000000) {    // FX new_counter_mode_call_pause
+                                    lightbulb_group_t* lightbulb_group = lightbulb_group_find(ch_group->ch[0]);
+                                    lightbulb_group->lightbulb_fx_data->counter_mode_call_pause = value_int - 500000000;
                                     
                                 } else if (value_int >= 200000000) {    // FX color[2]
                                     hkc_rgbw_setter(ch_group->ch[9], HOMEKIT_UINT32(value_int - 200000000));
@@ -8699,6 +8835,12 @@ void normal_mode_init() {
                         action_network->action = new_int_action;
                         
                         action_network->host = uni_strdup(cJSON_rsf_GetObjectItemCaseSensitive(json_action_network, NETWORK_ACTION_HOST)->valuestring, &unistrings);
+                        
+#ifdef ESP_PLATFORM
+                        if (cJSON_rsf_GetObjectItemCaseSensitive(json_action_network, NETWORK_ACTION_SSL) != NULL) {
+                            action_network->ssl = (uint8_t) cJSON_rsf_GetObjectItemCaseSensitive(json_action_network, NETWORK_ACTION_SSL)->valuefloat;
+                        }
+#endif
                         
                         action_network->port_n = 80;
                         if (cJSON_rsf_GetObjectItemCaseSensitive(json_action_network, NETWORK_ACTION_PORT) != NULL) {

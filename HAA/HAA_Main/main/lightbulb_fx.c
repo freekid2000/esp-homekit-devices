@@ -122,6 +122,10 @@ void set_fx_size(lightbulb_fx_data_t* lightbulb_fx_data, const uint8_t new_size)
     lightbulb_fx_data->options |= new_size << 1;
 }
 
+void set_fx_counter_mode_call_pause(lightbulb_fx_data_t* lightbulb_fx_data, const uint32_t new_counter_mode_call_pause) {
+    lightbulb_fx_data->counter_mode_call_pause = new_counter_mode_call_pause;
+}
+
 uint32_t get_lightbulb_fx_effect_now_ms() {
     return xTaskGetTickCount() * portTICK_PERIOD_MS;
 }
@@ -1569,6 +1573,11 @@ bool set_lightbulb_fx_effect(lightbulb_fx_data_t* lightbulb_fx_data) {
         }
         
         current_lightbulb_fx_data->counter_mode_call++;
+        
+        if (current_lightbulb_fx_data->counter_mode_call_pause != 0 &&
+            current_lightbulb_fx_data->counter_mode_call % current_lightbulb_fx_data->counter_mode_call_pause == 0) {
+            WS2812FX_mode_pause();
+        }
         
         is_frame = true;
     }

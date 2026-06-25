@@ -76,7 +76,8 @@ typedef struct _action_network {
     
     uint16_t len;
     uint8_t wait_response;
-    bool is_running;    // 1 bit
+    uint8_t ssl: 7;
+    bool is_running: 1;    // 1 bit
     
     char* host;
     
@@ -434,6 +435,8 @@ typedef struct _main_config {
 #ifdef ESP_PLATFORM
     adc_dac_data_t* adc_dac_data;
     pwmh_channel_t* pwmh_channels;
+    
+    WOLFSSL_CTX* ssl_ctx;
 #endif
     
 #ifdef ESP_HAS_INTERNAL_TEMP_SENSOR

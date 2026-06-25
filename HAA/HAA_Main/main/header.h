@@ -11,7 +11,7 @@
 #include "../../common/common_headers.h"
 
 // Version
-#define HAA_FIRMWARE_VERSION                "12.17.1"
+#define HAA_FIRMWARE_VERSION                "12.18.0"
 #define HAA_FIRMWARE_BETA_REVISION          ""          // Format: "b01"
 #define HAA_FIRMWARE_CODENAME               "Merlin"
 
@@ -33,7 +33,6 @@
 #define AUTODIMMER_TASK_SIZE                GLOBAL_TASK_SIZE
 #define IRRF_TX_TASK_SIZE                   (TASK_SIZE_FACTOR * (456))
 #define UART_ACTION_TASK_SIZE               (TASK_SIZE_FACTOR * (384))
-#define NETWORK_ACTION_TASK_SIZE            (TASK_SIZE_FACTOR * (544))
 #define TEMPERATURE_TASK_SIZE               GLOBAL_TASK_SIZE
 #define PROCESS_TH_TASK_SIZE                GLOBAL_TASK_SIZE
 #define PROCESS_HUMIDIF_TASK_SIZE           GLOBAL_TASK_SIZE
@@ -48,6 +47,16 @@
 #define RECV_UART_TASK_SIZE                 (TASK_SIZE_FACTOR * (384))
 #define REBOOT_TASK_SIZE                    (TASK_SIZE_FACTOR * (384))
 #define IRRF_CAPTURE_TASK_SIZE              (TASK_SIZE_FACTOR * (512))
+
+#ifdef ESP_PLATFORM
+#define NETWORK_ACTION_TASK_SIZE            (TASK_SIZE_FACTOR * (2048))
+#define FREE_MONITOR_TASK_SIZE              (TASK_SIZE_FACTOR * (2048))
+#define NETWORK_REPLY_LEN_MAX               (4096)
+#else
+#define NETWORK_ACTION_TASK_SIZE            (TASK_SIZE_FACTOR * (544))
+#define FREE_MONITOR_TASK_SIZE              GLOBAL_TASK_SIZE
+#define NETWORK_REPLY_LEN_MAX               (2048)
+#endif
 
 // Task Priorities
 #define INITIAL_SETUP_TASK_PRIORITY         (tskIDLE_PRIORITY + 1)
@@ -392,12 +401,6 @@
 #define AUTODIMMER_TASK_STEP_SET            "e"
 #define AUTODIMMER_TASK_STEP_DEFAULT        (20)
 #define LIGHTBULB_SET_DELAY_MS              (100)
-#define R                                   lightbulb_group->r
-#define G                                   lightbulb_group->g
-#define B                                   lightbulb_group->b
-#define CW                                  lightbulb_group->cw
-#define WW                                  lightbulb_group->ww
-#define WP                                  lightbulb_group->wp
 #define myCMY                               lightbulb_group->cmy
 #define myRGB                               lightbulb_group->rgb
 #define LIGHTBULB_AUTODIMMER_TIMER          ch_group->timer
@@ -729,6 +732,7 @@
 #define SYSTEM_ACTION                       "a"
 #define NETWORK_ACTION_HOST                 "h"
 #define NETWORK_ACTION_PORT                 "p"
+#define NETWORK_ACTION_SSL                  "s"
 #define NETWORK_ACTION_URL                  "u"
 #define NETWORK_ACTION_METHOD               "m"
 #define NETWORK_ACTION_HEADER               "e"
